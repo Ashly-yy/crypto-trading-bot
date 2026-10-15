@@ -1,0 +1,1 @@
+"""Crypto trading bot application package scaffold."""

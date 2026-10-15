@@ -1,0 +1,1 @@
+"""Package scaffold; implementation will be added in later steps."""
