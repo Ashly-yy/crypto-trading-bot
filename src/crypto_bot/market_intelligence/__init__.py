@@ -62,3 +62,32 @@ __all__ += [
     "parse_global_market_payload",
     "summarize_market_breadth",
 ]
+
+# Step 12 adaptive research exports
+from crypto_bot.market_intelligence.adaptive import (
+    AdaptiveConfig,
+    AdaptiveStatus,
+    AdaptiveMarketAssessment,
+    CandidateStatus,
+    CandidateAdaptationDecision,
+    SizingConstraints,
+    SizingStatus,
+    PositionSizeProposal,
+    assess_adaptive_market,
+    assess_strategy_candidate,
+    calculate_position_size,
+)
+
+__all__ += [
+    "AdaptiveConfig",
+    "AdaptiveStatus",
+    "AdaptiveMarketAssessment",
+    "CandidateStatus",
+    "CandidateAdaptationDecision",
+    "SizingConstraints",
+    "SizingStatus",
+    "PositionSizeProposal",
+    "assess_adaptive_market",
+    "assess_strategy_candidate",
+    "calculate_position_size",
+]
