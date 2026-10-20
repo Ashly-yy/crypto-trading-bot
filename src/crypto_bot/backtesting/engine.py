@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence
 
 from crypto_bot.backtesting.fills import (
     IntrabarExit, OrderSide, SimulatedFill, resolve_intrabar_exit, simulate_market_fill,
@@ -45,6 +45,18 @@ class ReplayResult:
     ending_position_open: bool
 
 
+@dataclass(frozen=True)
+class ReplayEvent:
+    """One chronological simulated fill and its immediate account state."""
+
+    kind: str
+    timestamp_ms: int
+    cash_after: Decimal
+    position_quantity_after: Decimal
+    fill: SimulatedFill
+    trade: SimulatedTrade | None = None
+
+
 def replay_single_position(
     *,
     candles: Sequence[object],
@@ -53,6 +65,10 @@ def replay_single_position(
     entry_intents: Iterable[EntryIntent],
     initial_cash: Decimal,
     require_contiguous: bool = True,
+    event_callback: Callable[[ReplayEvent], None] | None = None,
+    decision_callback: Callable[
+        [object, Decimal, Decimal], Iterable[EntryIntent] | None
+    ] | None = None,
 ) -> ReplayResult:
     """Replay precomputed intents without future-candle lookahead or exchange access.
 
@@ -85,28 +101,38 @@ def replay_single_position(
     next_intent = 0
 
     for candle in candles:
-        # Resolve an existing position before considering a new entry.
-        if active is not None and candle.open_time_ms > active["entry_candle_open_ms"]:
-            exit_reason = resolve_intrabar_exit(
-                candle=candle,
-                stop_price=active["intent"].stop_price,
-                target_price=active["intent"].target_price,
-            )
-            if exit_reason is not IntrabarExit.NONE:
-                reference = (active["intent"].stop_price if exit_reason is IntrabarExit.STOP
-                             else active["intent"].target_price)
-                exit_fill = simulate_market_fill(
-                    symbol=symbol, side=OrderSide.SELL, timestamp_ms=candle.close_time_ms,
-                    reference_price=reference, quantity=active["entry"].quantity,
-                    fee_rate=active["intent"].fee_rate,
-                    slippage_bps=active["intent"].slippage_bps,
+        position_was_open_at_candle_open = active is not None
+
+        if decision_callback is not None:
+            try:
+                position_quantity = (
+                    active["entry"].quantity if active is not None else Decimal("0")
                 )
-                entry = active["entry"]
-                gross = (exit_fill.fill_price - entry.fill_price) * entry.quantity
-                net = gross - entry.fee_quote - exit_fill.fee_quote
-                cash += exit_fill.fill_price * exit_fill.quantity - exit_fill.fee_quote
-                trades.append(SimulatedTrade(symbol, entry, exit_fill, exit_reason, gross, net))
-                active = None
+                supplied_intents = decision_callback(
+                    candle, cash, position_quantity
+                )
+                if supplied_intents is None:
+                    supplied_intents = ()
+                new_intents = tuple(supplied_intents)
+            except Exception as exc:
+                raise BacktestEngineError(
+                    f"Historical decision callback failed ({type(exc).__name__})."
+                ) from None
+
+            if any(not isinstance(item, EntryIntent) for item in new_intents):
+                raise BacktestEngineError(
+                    "Decision callback must return only EntryIntent objects."
+                )
+
+            if any(item.decision_time_ms > candle.open_time_ms for item in new_intents):
+                raise BacktestEngineError(
+                    "Decision callback returned an intent from after the current candle boundary."
+                )
+
+            if new_intents:
+                pending = ordered_intents[next_intent:] + list(new_intents)
+                pending.sort(key=lambda item: item.decision_time_ms)
+                ordered_intents = ordered_intents[:next_intent] + pending
 
         while next_intent < len(ordered_intents) and ordered_intents[next_intent].decision_time_ms <= candle.open_time_ms:
             intent = ordered_intents[next_intent]
@@ -138,6 +164,51 @@ def replay_single_position(
                 "entry": entry,
                 "entry_candle_open_ms": candle.open_time_ms,
             }
+            if event_callback is not None:
+                event_callback(ReplayEvent(
+                    kind="ENTRY",
+                    timestamp_ms=entry.timestamp_ms,
+                    cash_after=cash,
+                    position_quantity_after=entry.quantity,
+                    fill=entry,
+                ))
             # Do not test stop/target on the same candle used for entry.
+
+        # Resolve an existing position only after decisions at this candle boundary.
+        if (
+            position_was_open_at_candle_open
+            and active is not None
+            and candle.open_time_ms > active["entry_candle_open_ms"]
+        ):
+            exit_reason = resolve_intrabar_exit(
+                candle=candle,
+                stop_price=active["intent"].stop_price,
+                target_price=active["intent"].target_price,
+            )
+            if exit_reason is not IntrabarExit.NONE:
+                reference = (active["intent"].stop_price if exit_reason is IntrabarExit.STOP
+                             else active["intent"].target_price)
+                exit_fill = simulate_market_fill(
+                    symbol=symbol, side=OrderSide.SELL, timestamp_ms=candle.close_time_ms,
+                    reference_price=reference, quantity=active["entry"].quantity,
+                    fee_rate=active["intent"].fee_rate,
+                    slippage_bps=active["intent"].slippage_bps,
+                )
+                entry = active["entry"]
+                gross = (exit_fill.fill_price - entry.fill_price) * entry.quantity
+                net = gross - entry.fee_quote - exit_fill.fee_quote
+                cash += exit_fill.fill_price * exit_fill.quantity - exit_fill.fee_quote
+                trade = SimulatedTrade(symbol, entry, exit_fill, exit_reason, gross, net)
+                trades.append(trade)
+                active = None
+                if event_callback is not None:
+                    event_callback(ReplayEvent(
+                        kind="EXIT",
+                        timestamp_ms=exit_fill.timestamp_ms,
+                        cash_after=cash,
+                        position_quantity_after=Decimal("0"),
+                        fill=exit_fill,
+                        trade=trade,
+                    ))
 
     return ReplayResult(tuple(trades), tuple(rejected), skipped_busy, active is not None)

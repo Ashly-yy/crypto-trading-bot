@@ -84,3 +84,159 @@ def test_no_entry_before_decision_time():
     )
     assert not result.trades
     assert not result.ending_position_open
+
+
+
+def test_replay_emits_chronological_entry_and_exit_events_with_state():
+    candles = [
+        candle(0, 100, 105, 95, 101),
+        candle(60_000, 102, 105, 101, 103),
+        candle(120_000, 103, 104, 89, 92),
+    ]
+    events = []
+
+    result = replay_single_position(
+        candles=candles,
+        symbol="BTCUSDT",
+        interval="1m",
+        entry_intents=[intent(60_000)],
+        initial_cash=Decimal("1000"),
+        event_callback=events.append,
+    )
+
+    assert [event.kind for event in events] == ["ENTRY", "EXIT"]
+    assert events[0].timestamp_ms == 60_000
+    assert events[1].timestamp_ms == candles[2].close_time_ms
+    assert events[0].fill.side.value == "BUY"
+    assert events[1].fill.side.value == "SELL"
+    assert events[0].position_quantity_after == Decimal("1")
+    assert events[1].position_quantity_after == Decimal("0")
+    assert events[0].cash_after < Decimal("1000")
+    assert events[1].cash_after > events[0].cash_after
+    assert events[1].trade == result.trades[0]
+    assert result.ending_position_open is False
+
+
+def test_replay_without_event_callback_preserves_existing_api_behavior():
+    candles = [candle(0, 100, 105, 95, 101)]
+
+    result = replay_single_position(
+        candles=candles,
+        symbol="BTCUSDT",
+        interval="1m",
+        entry_intents=[intent(0)],
+        initial_cash=Decimal("1000"),
+    )
+
+    assert result.ending_position_open is True
+    assert result.trades == ()
+
+
+def test_decision_callback_sees_position_before_same_candle_exit():
+    candles = [
+        candle(0, 100, 105, 95, 101),
+        candle(60_000, 102, 105, 89, 92),
+    ]
+    observations = []
+
+    def decide(current_candle, cash, position_quantity):
+        observations.append(
+            (current_candle.open_time_ms, cash, position_quantity)
+        )
+        # Try to enter at the first boundary and again at the boundary
+        # where the existing position will later hit its stop.
+        return [intent(current_candle.open_time_ms)]
+
+    result = replay_single_position(
+        candles=candles,
+        symbol="BTCUSDT",
+        interval="1m",
+        entry_intents=[],
+        initial_cash=Decimal("1000"),
+        decision_callback=decide,
+    )
+
+    # At the second candle's open, the position must still be visible:
+    # its stop is only discovered from that candle's later low.
+    assert observations[1][0] == 60_000
+    assert observations[1][2] == Decimal("1")
+    assert observations[1][1] < Decimal("1000")
+
+    # The new intent cannot re-enter while the position is still open
+    # at the decision boundary, even though the stop is hit later.
+    assert len(result.trades) == 1
+    assert result.trades[0].exit_reason.value == "STOP"
+    assert result.skipped_busy_intents == 1
+    assert result.ending_position_open is False
+
+
+def test_decision_callback_can_supply_intent_at_historical_candle_boundary():
+    candles = [
+        candle(0, 100, 105, 95, 101),
+        candle(60_000, 102, 105, 101, 103),
+        candle(120_000, 103, 109, 102, 108),
+    ]
+    callback_calls = []
+
+    def decide(current_candle, cash, position_quantity):
+        callback_calls.append(
+            (current_candle.open_time_ms, cash, position_quantity)
+        )
+        if current_candle.open_time_ms == 60_000:
+            return [intent(60_000)]
+        return []
+
+    result = replay_single_position(
+        candles=candles,
+        symbol="BTCUSDT",
+        interval="1m",
+        entry_intents=[],
+        initial_cash=Decimal("1000"),
+        decision_callback=decide,
+    )
+
+    assert len(callback_calls) == 3
+    assert callback_calls[0][0] == 0
+    assert callback_calls[1][0] == 60_000
+    assert callback_calls[2][0] == 120_000
+    assert callback_calls[1][1] == Decimal("1000")
+    assert callback_calls[2][2] == Decimal("1")
+    assert result.ending_position_open is True
+    assert result.trades == ()
+
+
+def test_decision_callback_rejects_future_dated_intent():
+    candles = [candle(0, 100, 105, 95, 101)]
+
+    def decide(current_candle, cash, position_quantity):
+        return [intent(60_000)]
+
+    from crypto_bot.backtesting.engine import BacktestEngineError
+
+    import pytest
+    with pytest.raises(BacktestEngineError, match="after the current candle boundary"):
+        replay_single_position(
+            candles=candles,
+            symbol="BTCUSDT",
+            interval="1m",
+            entry_intents=[],
+            initial_cash=Decimal("1000"),
+            decision_callback=decide,
+        )
+
+
+def test_decision_callback_rejects_non_intent_results():
+    candles = [candle(0, 100, 105, 95, 101)]
+
+    from crypto_bot.backtesting.engine import BacktestEngineError
+
+    import pytest
+    with pytest.raises(BacktestEngineError, match="only EntryIntent"):
+        replay_single_position(
+            candles=candles,
+            symbol="BTCUSDT",
+            interval="1m",
+            entry_intents=[],
+            initial_cash=Decimal("1000"),
+            decision_callback=lambda *args: ["not-an-intent"],
+        )

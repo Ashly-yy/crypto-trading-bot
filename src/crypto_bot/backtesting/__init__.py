@@ -44,3 +44,11 @@ __all__ = [
     "PerformanceReport",
     "calculate_performance",
 ]
+
+# Step 18 historical orchestration exports
+from .orchestration import (
+    BacktestOrchestrationError,
+    DecisionPoint,
+    OrchestrationReport,
+    run_historical_orchestration,
+)
