@@ -27,8 +27,17 @@ class StateTransition:
 class KillSwitch:
     """Persists state in SQLite. A missing/unreadable database never permits entries."""
 
-    def __init__(self, database_path: str | Path) -> None:
+    def __init__(
+        self, database_path: str | Path, *, initialize: bool = True
+    ) -> None:
         self.database_path = Path(database_path)
+        self._read_only = not initialize
+
+        if not initialize:
+            if not self.database_path.is_file():
+                raise FileNotFoundError("Kill-switch database does not exist.")
+            return
+
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.execute("""
@@ -53,7 +62,11 @@ class KillSwitch:
             )
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(str(self.database_path), timeout=5)
+        if self._read_only:
+            uri = self.database_path.resolve().as_uri() + "?mode=ro"
+            connection = sqlite3.connect(uri, uri=True, timeout=5)
+        else:
+            connection = sqlite3.connect(str(self.database_path), timeout=5)
         connection.execute("PRAGMA busy_timeout = 5000")
         return connection
 

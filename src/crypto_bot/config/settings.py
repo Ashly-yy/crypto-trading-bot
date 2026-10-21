@@ -4,6 +4,7 @@ import re
 from enum import Enum
 from functools import lru_cache
 from ipaddress import ip_address
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -79,6 +80,7 @@ class Settings(BaseSettings):
 
     default_trading_mode: TradingMode = TradingMode.BACKTEST
     live_trading_enabled: bool = False
+    state_directory: Path = Path("data/state")
 
     binance_spot_testnet_api_key: SecretStr | None = None
     binance_spot_testnet_api_secret: SecretStr | None = None
