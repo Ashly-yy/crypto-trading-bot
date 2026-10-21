@@ -28,6 +28,14 @@ class EntryIntent:
 
 
 @dataclass(frozen=True)
+class ExitIntent:
+    """Close an existing simulated LONG spot position at a replay boundary."""
+    symbol: str
+    decision_time_ms: int
+    reason: str = "strategy_exit"
+
+
+@dataclass(frozen=True)
 class SimulatedTrade:
     symbol: str
     entry: SimulatedFill
@@ -67,7 +75,7 @@ def replay_single_position(
     require_contiguous: bool = True,
     event_callback: Callable[[ReplayEvent], None] | None = None,
     decision_callback: Callable[
-        [object, Decimal, Decimal], Iterable[EntryIntent] | None
+        [object, Decimal, Decimal], Iterable[EntryIntent | ExitIntent] | None
     ] | None = None,
 ) -> ReplayResult:
     """Replay precomputed intents without future-candle lookahead or exchange access.
@@ -119,9 +127,9 @@ def replay_single_position(
                     f"Historical decision callback failed ({type(exc).__name__})."
                 ) from None
 
-            if any(not isinstance(item, EntryIntent) for item in new_intents):
+            if any(not isinstance(item, (EntryIntent, ExitIntent)) for item in new_intents):
                 raise BacktestEngineError(
-                    "Decision callback must return only EntryIntent objects."
+                    "Decision callback must return only EntryIntent or ExitIntent objects."
                 )
 
             if any(item.decision_time_ms > candle.open_time_ms for item in new_intents):
@@ -129,8 +137,41 @@ def replay_single_position(
                     "Decision callback returned an intent from after the current candle boundary."
                 )
 
-            if new_intents:
-                pending = ordered_intents[next_intent:] + list(new_intents)
+            # Execute strategy exits at this candle open, before intrabar stop/target checks.
+            for exit_intent in (item for item in new_intents if isinstance(item, ExitIntent)):
+                if not isinstance(exit_intent.symbol, str) or exit_intent.symbol.strip().upper() != symbol.upper():
+                    rejected.append(f"{getattr(exit_intent, 'symbol', '')}: exit symbol does not match replay symbol")
+                    continue
+                if not isinstance(exit_intent.reason, str) or not exit_intent.reason.strip():
+                    rejected.append(f"{symbol}: exit reason must be a non-empty string")
+                    continue
+                if active is None:
+                    rejected.append(f"{symbol}: strategy exit rejected because no spot position is open")
+                    continue
+                entry_intent = active["intent"]
+                entry_fill = active["entry"]
+                exit_fill = simulate_market_fill(
+                    symbol=symbol, side=OrderSide.SELL,
+                    timestamp_ms=candle.open_time_ms, reference_price=candle.open,
+                    quantity=entry_fill.quantity, fee_rate=entry_intent.fee_rate,
+                    slippage_bps=entry_intent.slippage_bps,
+                )
+                gross = (exit_fill.fill_price - entry_fill.fill_price) * entry_fill.quantity
+                net = gross - entry_fill.fee_quote - exit_fill.fee_quote
+                cash += exit_fill.fill_price * exit_fill.quantity - exit_fill.fee_quote
+                trade = SimulatedTrade(symbol, entry_fill, exit_fill, IntrabarExit.STRATEGY, gross, net)
+                trades.append(trade)
+                active = None
+                if event_callback is not None:
+                    event_callback(ReplayEvent(
+                        kind="EXIT", timestamp_ms=exit_fill.timestamp_ms,
+                        cash_after=cash, position_quantity_after=Decimal("0"),
+                        fill=exit_fill, trade=trade,
+                    ))
+
+            callback_entries = [item for item in new_intents if isinstance(item, EntryIntent)]
+            if callback_entries:
+                pending = ordered_intents[next_intent:] + callback_entries
                 pending.sort(key=lambda item: item.decision_time_ms)
                 ordered_intents = ordered_intents[:next_intent] + pending
 

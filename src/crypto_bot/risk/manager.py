@@ -60,6 +60,13 @@ class RiskManager:
                 raise ValueError("current daily loss is missing or invalid")
             if isinstance(context.open_position_count, bool) or not isinstance(context.open_position_count, int) or context.open_position_count < 0:
                 raise ValueError("open position count is missing or invalid")
+            for flag_name in (
+                "data_is_fresh",
+                "account_state_is_valid",
+                "exchange_filters_are_valid",
+            ):
+                if not isinstance(getattr(context, flag_name), bool):
+                    raise ValueError(f"{flag_name} must be a bool")
         except (AttributeError, TypeError, ValueError, OSError) as exc:
             return RiskDecision(False, (f"invalid or missing risk input: {exc}",))
 

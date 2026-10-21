@@ -45,9 +45,13 @@ def test_ports_must_be_in_allowed_range(field: str) -> None:
         make_settings(**{field: 80})
 
 
-def test_live_mode_is_rejected_while_live_flag_is_false() -> None:
-    with pytest.raises(ValidationError, match="LIVE_TRADING_ENABLED"):
-        make_settings(default_trading_mode=TradingMode.BINANCE_SPOT_LIVE)
+@pytest.mark.parametrize("live_enabled", [False, True])
+def test_live_mode_is_rejected_regardless_of_live_flag(live_enabled: bool) -> None:
+    with pytest.raises(ValidationError, match="permanently locked"):
+        make_settings(
+            default_trading_mode=TradingMode.BINANCE_SPOT_LIVE,
+            live_trading_enabled=live_enabled,
+        )
 
 
 def test_credentials_are_represented_as_secret_values() -> None:

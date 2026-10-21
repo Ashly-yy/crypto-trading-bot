@@ -11,6 +11,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .engine import (
     EntryIntent,
+    ExitIntent,
     ReplayEvent,
     replay_single_position,
 )
@@ -245,7 +246,7 @@ def run_stateful_historical_orchestration(
         candle: Any,
         _replay_cash: Decimal,
         replay_quantity: Decimal,
-    ) -> Iterable[EntryIntent]:
+    ) -> Iterable[EntryIntent | ExitIntent]:
         nonlocal approved_count, rejected_count, skipped_count
 
         timestamp = candle.open_time_ms
@@ -299,6 +300,12 @@ def run_stateful_historical_orchestration(
             getattr(signal.action, "value", signal.action),
         )
         action = str(action).strip().upper()
+
+        if action == "EXIT_CANDIDATE":
+            if replay_quantity <= 0 or position_asset is None:
+                rejected_count += 1
+                return ()
+            return (ExitIntent(symbol=symbol, decision_time_ms=timestamp, reason="strategy_exit"),)
 
         if action != "BUY_CANDIDATE":
             skipped_count += 1

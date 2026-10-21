@@ -1,7 +1,8 @@
-﻿"""Historical backtesting components; simulation only, no exchange order access."""
+"""Historical backtesting components; simulation only, no exchange order access."""
 from .engine import (
     BacktestEngineError,
     EntryIntent,
+    ExitIntent,
     ReplayResult,
     SimulatedTrade,
     replay_single_position,
@@ -28,6 +29,7 @@ from .risk_gate import (
 __all__ = [
     "BacktestEngineError",
     "EntryIntent",
+    "ExitIntent",
     "ReplayResult",
     "SimulatedTrade",
     "replay_single_position",
@@ -51,4 +53,11 @@ from .orchestration import (
     DecisionPoint,
     OrchestrationReport,
     run_historical_orchestration,
+)
+
+# Step 19 strategy-driven historical replay exports
+from .strategy_driven import (
+    StrategyDrivenBacktestError,
+    build_strategy_decision_points,
+    run_strategy_historical_backtest,
 )

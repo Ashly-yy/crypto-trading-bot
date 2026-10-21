@@ -240,3 +240,41 @@ def test_decision_callback_rejects_non_intent_results():
             initial_cash=Decimal("1000"),
             decision_callback=lambda *args: ["not-an-intent"],
         )
+
+
+def test_strategy_exit_closes_position_at_boundary_and_emits_one_exit():
+    from crypto_bot.backtesting.engine import ExitIntent
+    from crypto_bot.backtesting.fills import IntrabarExit, OrderSide
+    candles = [candle(0, 100, 105, 95, 101), candle(60_000, 100, 120, 80, 110), candle(120_000, 110, 111, 109, 110)]
+    events = []
+    def decide(current_candle, cash, position_quantity):
+        if current_candle.open_time_ms == 60_000:
+            assert position_quantity == Decimal("1")
+            return [ExitIntent("BTCUSDT", 60_000)]
+        return []
+    result = replay_single_position(candles=candles, symbol="BTCUSDT", interval="1m", entry_intents=[intent(0)], initial_cash=Decimal("1000"), event_callback=events.append, decision_callback=decide)
+    assert len(result.trades) == 1
+    assert result.trades[0].exit_reason is IntrabarExit.STRATEGY
+    assert result.trades[0].exit.timestamp_ms == 60_000
+    assert result.trades[0].exit.side is OrderSide.SELL
+    assert [event.kind for event in events] == ["ENTRY", "EXIT"]
+    assert result.ending_position_open is False
+
+
+def test_strategy_exit_without_position_is_rejected_not_short_opened():
+    from crypto_bot.backtesting.engine import ExitIntent
+    result = replay_single_position(candles=[candle(0, 100, 105, 95, 101)], symbol="BTCUSDT", interval="1m", entry_intents=[], initial_cash=Decimal("1000"), decision_callback=lambda c, cash, qty: [ExitIntent("BTCUSDT", c.open_time_ms)])
+    assert not result.trades
+    assert not result.ending_position_open
+    assert any("no spot position is open" in item for item in result.rejected_intents)
+
+
+def test_strategy_exit_wrong_symbol_is_rejected_and_position_remains_open():
+    from crypto_bot.backtesting.engine import ExitIntent
+    def decide(current_candle, cash, position_quantity):
+        if current_candle.open_time_ms == 60_000: return [ExitIntent("ETHUSDT", 60_000)]
+        return []
+    result = replay_single_position(candles=[candle(0, 100, 105, 95, 101), candle(60_000, 102, 105, 101, 103)], symbol="BTCUSDT", interval="1m", entry_intents=[intent(0)], initial_cash=Decimal("1000"), decision_callback=decide)
+    assert not result.trades
+    assert result.ending_position_open is True
+    assert any("exit symbol does not match" in item for item in result.rejected_intents)

@@ -17,6 +17,7 @@ class IntrabarExit(str, Enum):
     NONE = "NONE"
     STOP = "STOP"
     TARGET = "TARGET"
+    STRATEGY = "STRATEGY"
 
 def _decimal(value: Any, name: str) -> Decimal:
     if isinstance(value, bool):

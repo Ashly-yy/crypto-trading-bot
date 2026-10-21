@@ -279,3 +279,23 @@ def test_invalid_persisted_state_fails_closed(tmp_path):
     restarted = KillSwitch(database)
     assert restarted.state is KillSwitchState.EMERGENCY_HALTED
     assert not restarted.can_open_entries
+
+@pytest.mark.parametrize(
+    "flag_name",
+    ["data_is_fresh", "account_state_is_valid", "exchange_filters_are_valid"],
+)
+@pytest.mark.parametrize("invalid_value", ["yes", 1, None, [], {}])
+def test_rejects_malformed_safety_flags(
+    risk_manager, flag_name, invalid_value
+):
+    context = make_context(**{flag_name: invalid_value})
+    decision = risk_manager.evaluate(
+        make_proposal(),
+        make_portfolio().snapshot({}),
+        context,
+    )
+    assert not decision.approved
+    assert any(
+        f"{flag_name} must be a bool" in reason
+        for reason in decision.reasons
+    )

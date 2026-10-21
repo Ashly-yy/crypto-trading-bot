@@ -183,13 +183,10 @@ class Settings(BaseSettings):
                         f"{style} context interval {context_interval} must be strictly higher than "
                         f"entry interval {entry_interval}."
                     )
-        if (
-            self.default_trading_mode is TradingMode.BINANCE_SPOT_LIVE
-            and not self.live_trading_enabled
-        ):
+        if self.default_trading_mode is TradingMode.BINANCE_SPOT_LIVE:
             raise ValueError(
-                "BINANCE_SPOT_LIVE is locked unless LIVE_TRADING_ENABLED=true; "
-                "live execution is not implemented at this development stage."
+                "BINANCE_SPOT_LIVE is permanently locked at this development stage; "
+                "live execution and its readiness gates are not implemented."
             )
         return self
 
