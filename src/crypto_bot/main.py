@@ -1,6 +1,7 @@
 """Fail-closed application startup and read-only recovery inspection."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import sqlite3
 from pathlib import Path
@@ -11,6 +12,8 @@ from crypto_bot.logging_config import configure_logging
 from crypto_bot.portfolio.persistence import PortfolioStore
 from crypto_bot.recovery_coordinator import RecoveryCoordinator
 from crypto_bot.storage.order_ledger import OrderLedger
+from crypto_bot.telegram.events import TelegramEventNotifier
+from crypto_bot.telegram.notifier import TelegramNotifier
 
 
 _REQUIRED_TABLES = {
@@ -102,6 +105,18 @@ def recovery_databases_ready(directory: Path) -> tuple[bool, str]:
     return True, "Existing recovery databases and schemas found"
 
 
+
+def _notify_startup(event_notifier, event_name: str, *args: str) -> None:
+    """Run a best-effort startup notification without affecting safety logic."""
+    try:
+        event = getattr(event_notifier, event_name)
+        asyncio.run(event(*args))
+    except Exception:
+        logging.getLogger("crypto_bot.startup").warning(
+            "Startup notification failed; continuing safety logic."
+        )
+
+
 def main() -> None:
     settings = get_settings()
     configure_logging(settings)
@@ -112,10 +127,16 @@ def main() -> None:
     logger.info("Configured default mode: %s", settings.default_trading_mode.value)
     logger.info("Live trading enabled flag: %s", settings.live_trading_enabled)
 
+    event_notifier = TelegramEventNotifier(TelegramNotifier(settings))
+    _notify_startup(
+        event_notifier, "startup_started", settings.default_trading_mode.value
+    )
+
     ready, message = recovery_databases_ready(settings.state_directory)
     if not ready:
         logger.error("Recovery preflight failed: %s", message)
         logger.error("Startup remains non-executing; no orders were submitted.")
+        _notify_startup(event_notifier, "startup_blocked", message)
         return
 
     try:
@@ -135,6 +156,11 @@ def main() -> None:
         report = coordinator.recover()
     except Exception:
         logger.exception("Recovery inspection failed; startup remains non-executing.")
+        _notify_startup(
+            event_notifier,
+            "startup_blocked",
+            "Recovery inspection raised an unexpected error",
+        )
         return
 
     logger.info("Recovery kill-switch state: %s", report.kill_switch_state)
@@ -150,6 +176,7 @@ def main() -> None:
             "Persisted state inspected successfully. Entry authorization remains disabled."
         )
 
+    _notify_startup(event_notifier, "recovery_completed", report)
     logger.info("Startup is foundation-only; no exchange connection or order execution started.")
 
 
